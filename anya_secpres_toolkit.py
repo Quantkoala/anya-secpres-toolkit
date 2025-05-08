@@ -1,92 +1,70 @@
-# File: anya_secpres_toolkit.py
-"""ANYA SecPres Toolkit – works with openai >= 1.0 (new API)."""
-import os, streamlit as st, pandas as pd
+# anya_secpres_toolkit.py  – handles OpenAI rate limits gracefully
+import os, time, streamlit as st, pandas as pd
 from datetime import datetime
+from typing import Callable
 
-# ── OpenAI optional ──────────────────────────
+# Optional OpenAI
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
 try:
     import openai
+    from openai import RateLimitError
     openai.api_key = OPENAI_KEY
-
-    def gpt_translate(text: str, source: str, target: str) -> str:
-        if not OPENAI_KEY:
-            return "[Set OPENAI_API_KEY]"
-        response = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
-            temperature=0.2,
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"You are a professional translator. Translate from {source} to {target}. "
-                               "Return only the translated text, preserve numbering/formatting."
-                },
-                {"role": "user", "content": text}
-            ]
-        )
-        return response.choices[0].message.content.strip()
-
 except ModuleNotFoundError:
-    def gpt_translate(text: str, source: str, target: str) -> str:
-        return "[openai package not installed]\n\n" + text
+    openai, RateLimitError = None, Exception
 
-# ── Document library ─────────────────────────
-DOC_LIBRARY = {
-    "Governance": {
-        "Board Agenda": "Date: ____\n1. Call to Order\n2. Approve Minutes\n3. Q2 Results…",
-        "Board Minutes": "Attendees: ____\nResolutions: 1)…",
-        "Board Resolution": "Resolved that…"
-    },
-    "Committees": {
-        "Audit Committee Report": "The committee reviewed IFRS statements…",
-        "Remuneration Committee Report": "The committee approved exec comp…"
-    },
-    "Disclosure": {
-        "IR Press Release": "ANYA Biopharm reports NT$413M revenue…",
-        "Emerging Board Filing": "Form E‑B‑2: quarterly update…"
-    }
+# ---- robust translator --------------------------------------------------
+def _call_chat(messages):
+    return openai.chat.completions.create(model="gpt-3.5-turbo", temperature=0.2, messages=messages)
+
+def translate(text: str, src: str, tgt: str) -> str:
+    """Translate with retry (exponential back‑off)."""
+    if not openai or not OPENAI_KEY:
+        return "[Missing OPENAI_API_KEY or openai package]\n\n" + text
+    sys_msg = (f"You are a professional translator. Translate from {src} to {tgt}. "
+               "Return only translated text, preserve numbering/formatting.")
+    messages = [{"role":"system","content":sys_msg}, {"role":"user","content":text}]
+    delay = 2
+    for attempt in range(4):     # up to 4 tries: 2s,4s,8s,16s
+        try:
+            resp = _call_chat(messages)
+            return resp.choices[0].message.content.strip()
+        except RateLimitError:
+            if attempt == 3:
+                return "[Rate‑limit reached, please try again later]"
+            time.sleep(delay)
+            delay *= 2
+        except Exception as e:
+            return f"[Translation error: {e}]"
+
+# ---- Sample board docs ---------------------------------------------------
+DOCS = {
+    "Governance": {"Board Agenda": "Date: ____\n1. Call to order\n2. Approve minutes"},
+    "Disclosure": {"IR Press Release": "ANYA reports NT$413M revenue…"}
 }
 
 st.set_page_config(page_title="ANYA SecPres Toolkit", layout="wide")
-st.sidebar.header("📂 Board DMS")
-sidebar_items = ["Home"] + [f"{cat} / {doc}" for cat in DOC_LIBRARY for doc in DOC_LIBRARY[cat]]
-page = st.sidebar.selectbox("Navigate", sidebar_items)
-
-st.title("ANYA Secretary‑to‑President Toolkit")
+page = st.sidebar.selectbox("Navigate", ["Home"] + [f"{c} / {d}" for c in DOCS for d in DOCS[c]])
 
 memory = st.session_state.setdefault("memory", [])
 
-def memory_panel():
-    with st.expander("🗂 Translation Memory – session"):
-        if memory:
-            st.table(pd.DataFrame(memory))
-        else:
-            st.write("No translations yet.")
-
 if page == "Home":
-    st.subheader("Document Samples")
-    col1, col2 = st.columns(2)
-    category = col1.selectbox("Category", list(DOC_LIBRARY))
-    doc_name = col2.selectbox("Document", list(DOC_LIBRARY[category]))
-    original = DOC_LIBRARY[category][doc_name]
-    st.text_area("Original", original, height=180)
+    cat = st.selectbox("Category", list(DOCS))
+    doc = st.selectbox("Document", list(DOCS[cat]))
+    txt = DOCS[cat][doc]
+    st.text_area("Original", txt, height=160)
     if st.button("Translate ➜ 繁體中文"):
-        translated = gpt_translate(original, "en", "zh-tw")
-        st.text_area("Translation", translated, height=180)
-        memory.append({"Document": doc_name, "Snippet": translated[:80], "Time": datetime.now().strftime("%H:%M")})
-
+        out = translate(txt, "en", "zh-tw")
+        st.text_area("Translation", out, height=160)
+        memory.append({"doc": doc, "snippet": out[:60], "time": datetime.now().strftime('%H:%M')})
 else:
-    cat, doc = page.split(" / ")
-    st.subheader(f"{doc} ({cat})")
-    content = st.text_area("Edit original content", DOC_LIBRARY[cat][doc], height=200)
-    col_zh, col_en = st.columns(2)
-    if col_zh.button("Translate ➜ 繁體中文"):
-        zh = gpt_translate(content, "en", "zh-tw")
-        st.text_area("繁體中文", zh, height=200)
-        memory.append({"Document": doc, "Snippet": zh[:80], "Time": datetime.now().strftime("%H:%M")})
-    if col_en.button("Translate ➜ English"):
-        en = gpt_translate(content, "zh-tw", "en")
-        st.text_area("English", en, height=200)
-        memory.append({"Document": doc, "Snippet": en[:80], "Time": datetime.now().strftime("%H:%M")})
+    c, d = page.split(" / ")
+    txt = st.text_area("Original", DOCS[c][d], height=160)
+    if st.button("Translate ➜ 繁體中文"):
+        out = translate(txt, "en", "zh-tw")
+        st.text_area("ZH", out, height=160)
+    if st.button("Translate ➜ English"):
+        out = translate(txt, "zh-tw", "en")
+        st.text_area("EN", out, height=160)
 
-memory_panel()
+with st.expander("Memory"):
+    if memory: st.table(pd.DataFrame(memory)) else: st.write("No translations yet.")
