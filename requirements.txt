@@ -2,3 +2,5 @@ streamlit
 pandas
 numpy
 Pillow
+openai
+python-docx
