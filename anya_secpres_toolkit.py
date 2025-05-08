@@ -1,87 +1,119 @@
-# anya_secpres_toolkit.py – rate‑limit safe and syntax‑clean
-import os, time, streamlit as st, pandas as pd
+
+# File: anya_secpres_toolkit.py
+"""
+ANYA Biopharm Inc. – Secretary-to-the-President Toolkit
+• 70% Translation Gurus: EN ↔ 繁體中文 (Taiwan)
+• 30% Board Ops: Document management & progress tracking
+"""
+import os
+import streamlit as st
+import pandas as pd
 from datetime import datetime
 
-# --- OpenAI optional ------------------------------------------------------
+# --- Optional OpenAI setup ---
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
 try:
     import openai
-    from openai import RateLimitError
     openai.api_key = OPENAI_KEY
-except ModuleNotFoundError:
-    openai, RateLimitError = None, Exception
+except ImportError:
+    openai = None
 
+# --- Translation function ---
 def translate(text: str, src: str, tgt: str) -> str:
-    """Translate with exponential back‑off to handle rate limits."""
     if not openai or not OPENAI_KEY:
-        return "[OPENAI not configured]"
-    sys_msg = (f"You are a professional translator. Translate from {src} to {tgt}. "
-               "Return only translated text; keep formatting.")
-    msgs = [{"role": "system", "content": sys_msg}, {"role": "user", "content": text}]
+        return "[Translation service unavailable]\n" + text
+    resp = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        temperature=0,
+        messages=[
+            {"role":"system", "content": f"Translate from {src} to {tgt} corporate governance text."},
+            {"role":"user", "content": text}
+        ]
+    )
+    return resp.choices[0].message.content.strip()
 
-    delay = 2
-    for attempt in range(4):
-        try:
-            resp = openai.chat.completions.create(model="gpt-3.5-turbo", temperature=0.2, messages=msgs)
-            return resp.choices[0].message.content.strip()
-        except RateLimitError:
-            if attempt == 3:
-                return "[Rate‑limit reached — try later]"
-            time.sleep(delay)
-            delay *= 2
-        except Exception as e:
-            return f"[Translation error: {e}]"
-
-# --- Sample board docs ----------------------------------------------------
+# --- Board document definitions (realistic placeholders) ---
 DOCS = {
     "Governance": {
-        "Board Agenda": "Date: ____\n1. Call to Order\n2. Approve Minutes\n3. Q2 Results…",
-        "Board Minutes": "Attendees: ____\nResolutions: 1)…"
+        "Agenda": "1. Call to Order\n2. Approve Minutes\n3. Q2 Financial Review\n4. R&D Update\n5. Adjourn",
+        "Minutes": "Attendees: ____, Decisions: 1)… 2)…",
+        "Resolution": "Resolved that the Company shall file its IPO application Q4 2025"
     },
-    "Disclosure": {
-        "IR Press Release": "ANYA Biopharm reports NT$413M revenue…"
+    "Committees": {
+        "Audit Report": "Audit Committee reviewed IFRS Q2 statements; no material exceptions.",
+        "Remuneration Report": "Approved executive compensation framework for FY2025."
+    },
+    "IR & Filings": {
+        "Press Release": "ANYA reports NT$413M revenue in Q2 2024, up 14% QoQ.",
+        "IND Summary": "CMC: 14 QC steps; nonclinical safety completed."
     }
 }
 
-# --- Streamlit layout -----------------------------------------------------
+# --- Session state init ---
+state = st.session_state
+if 'progress' not in state:
+    # Track % completion by doc key
+    flat_keys = [f"{cat}/{doc}" for cat in DOCS for doc in DOCS[cat]]
+    state.progress = {k: 0 for k in flat_keys}
+if 'memory' not in state:
+    state.memory = []
+
+# --- Page config ---
 st.set_page_config(page_title="ANYA SecPres Toolkit", layout="wide")
+st.sidebar.title("📂 Board Document Library")
 
-st.sidebar.header("📂 Board DMS")
-options = ["Home"] + [f"{cat} / {doc}" for cat in DOCS for doc in DOCS[cat]]
-page = st.sidebar.selectbox("Navigate", options)
+# --- Sidebar: document selection ---
+menu = ["Home"] + list(state.progress.keys())
+selection = st.sidebar.selectbox("Select document", menu)
 
-st.title("ANYA Secretary‑to‑President Toolkit")
+st.title("ANYA Biopharm Inc. SecPres Toolkit")
 
-memory = st.session_state.setdefault("memory", [])
+# --- Home: overview & progress tracking ---
+if selection == "Home":
+    st.header("Document Preparation Tracker")
+    for key in state.progress:
+        pct = state.progress[key]
+        cat, doc = key.split('/')
+        st.subheader(f"{cat} – {doc}")
+        col1, col2 = st.columns([3,1])
+        with col1:
+            st.progress(pct/100)
+        with col2:
+            new_pct = st.number_input(
+                "Completion%", min_value=0, max_value=100, value=pct, key=key)
+            state.progress[key] = new_pct
+    st.markdown("---")
+    st.header("Quick Sample Translation")
+    # Quick translate snippet
+    sample = st.text_area("Enter text for translation", height=100)
+    lang = st.selectbox("Direction", ["en→zh-tw", "zh-tw→en"])
+    if st.button("Translate sample"):
+        src, tgt = lang.split('→')
+        result = translate(sample, src, tgt)
+        st.text_area("Translation result", result, height=100)
+        state.memory.append({"source": sample[:50], "translation": result[:50], "time": datetime.now().strftime('%H:%M')})
 
-# --- Home page ------------------------------------------------------------
-if page == "Home":
-    cat = st.selectbox("Category", list(DOCS))
-    doc = st.selectbox("Document", list(DOCS[cat]))
-    src_text = DOCS[cat][doc]
-    st.text_area("Original", src_text, height=160)
-    if st.button("Translate ➜ 繁體中文"):
-        trg_text = translate(src_text, "en", "zh-tw")
-        st.text_area("Translation", trg_text, height=160)
-        memory.append({"doc": doc, "snippet": trg_text[:60], "time": datetime.now().strftime('%H:%M')})
-
-# --- Specific document page ----------------------------------------------
+# --- Document-specific page ---
 else:
-    cat, doc = page.split(" / ")
-    content = st.text_area("Original", DOCS[cat][doc], height=160)
-    col_zh, col_en = st.columns(2)
-    if col_zh.button("Translate ➜ 繁體中文"):
-        zh = translate(content, "en", "zh-tw")
-        st.text_area("ZH", zh, height=160)
-        memory.append({"doc": doc, "snippet": zh[:60], "time": datetime.now().strftime('%H:%M')})
-    if col_en.button("Translate ➜ English"):
-        en = translate(content, "zh-tw", "en")
-        st.text_area("EN", en, height=160)
-        memory.append({"doc": doc, "snippet": en[:60], "time": datetime.now().strftime('%H:%M')})
+    cat, doc = selection.split('/')
+    st.header(f"{doc} ({cat}) – Preview & Translate")
+    original = DOCS[cat][doc]
+    edited = st.text_area("Original text", original, height=200)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Translate → 繁體中文"):
+            out = translate(edited, "en", "zh-tw")
+            st.text_area("Translation (中文)", out, height=200)
+            state.memory.append({"source": edited[:50], "translation": out[:50], "time": datetime.now().strftime('%H:%M')})
+    with col2:
+        if st.button("Translate → English"):
+            out = translate(edited, "zh-tw", "en")
+            st.text_area("Translation (EN)", out, height=200)
+            state.memory.append({"source": edited[:50], "translation": out[:50], "time": datetime.now().strftime('%H:%M')})
 
-# --- Translation memory ---------------------------------------------------
-with st.expander("🗂 Translation Memory – session"):
-    if memory:
-        st.table(pd.DataFrame(memory))
+# --- Translation memory ---
+with st.expander("🗂 Translation Memory – this session"):
+    if state.memory:
+        st.table(pd.DataFrame(state.memory))
     else:
         st.write("No translations yet.")
